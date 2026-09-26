@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MUZZLE_SANITIZE "Build tests with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(MUZZLE_LIBFUZZER "Build the libFuzzer target (clang only)" OFF)
 
 set(MUZZLE_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror)
 
@@ -30,6 +31,21 @@ target_link_libraries(muzzle_tests PRIVATE muzzle_core)
 target_compile_options(muzzle_tests PRIVATE ${MUZZLE_WARNINGS})
 add_test(NAME unit COMMAND muzzle_tests)
 
+# The differential fuzzer as a plain seeded random campaign, runnable with any compiler.
+add_executable(muzzle_fuzz_random fuzz/fuzz_frame_parser.cpp)
+target_link_libraries(muzzle_fuzz_random PRIVATE muzzle_core)
+target_compile_options(muzzle_fuzz_random PRIVATE ${MUZZLE_WARNINGS})
+add_test(NAME fuzz_random COMMAND muzzle_fuzz_random 20000)
+
 if(MUZZLE_SANITIZE)
   target_compile_options(muzzle_tests PRIVATE ${MUZZLE_SAN_FLAGS})
+  target_compile_options(muzzle_fuzz_random PRIVATE ${MUZZLE_SAN_FLAGS})
+endif()
+
+if(MUZZLE_LIBFUZZER)
+  add_executable(muzzle_fuzz fuzz/fuzz_frame_parser.cpp src/feetech.cpp src/frame_parser.cpp)
+  target_include_directories(muzzle_fuzz PRIVATE include)
+  target_compile_definitions(muzzle_fuzz PRIVATE MUZZLE_LIBFUZZER)
+  target_compile_options(muzzle_fuzz PRIVATE -g -O1 -fsanitize=fuzzer,address,undefined)
+  target_link_options(muzzle_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
