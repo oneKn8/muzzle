@@ -1,0 +1,13 @@
+{
+  "name": "muzzle",
+  "version": "0.1.0",
+  "description": "Streaming, allocation-free Feetech STS servo bus protocol layer for microcontrollers",
+  "keywords": ["feetech", "sts3215", "servo", "uart", "protocol"],
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  }
+}

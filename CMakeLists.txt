@@ -49,3 +49,7 @@ if(MUZZLE_LIBFUZZER)
   target_compile_options(muzzle_fuzz PRIVATE -g -O1 -fsanitize=fuzzer,address,undefined)
   target_link_options(muzzle_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
+
+add_executable(muzzle_host_bench bench/host_bench.cpp)
+target_link_libraries(muzzle_host_bench PRIVATE muzzle_core)
+target_compile_options(muzzle_host_bench PRIVATE ${MUZZLE_WARNINGS})
