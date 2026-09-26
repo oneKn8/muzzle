@@ -1,0 +1,8 @@
+build/
+.pio/
+.vscode/
+compile_commands.json
+crash-*
+leak-*
+timeout-*
+fuzz-*.log
