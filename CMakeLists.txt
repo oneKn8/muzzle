@@ -22,3 +22,14 @@ if(MUZZLE_SANITIZE)
   target_compile_options(muzzle_core PRIVATE ${MUZZLE_SAN_FLAGS})
   target_link_options(muzzle_core PUBLIC -fsanitize=address,undefined)
 endif()
+
+enable_testing()
+
+add_executable(muzzle_tests tests/test_main.cpp)
+target_link_libraries(muzzle_tests PRIVATE muzzle_core)
+target_compile_options(muzzle_tests PRIVATE ${MUZZLE_WARNINGS})
+add_test(NAME unit COMMAND muzzle_tests)
+
+if(MUZZLE_SANITIZE)
+  target_compile_options(muzzle_tests PRIVATE ${MUZZLE_SAN_FLAGS})
+endif()
