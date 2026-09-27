@@ -7,10 +7,17 @@
 //   2. How long does a byte take to get from UART1's TX pin back to readable data on its
 //      RX pin, with the Arduino driver's defaults versus tuned settings? This is where
 //      "the ESP32 takes 100 ms" style delays come from, so it is measured, not assumed.
-//      Needs one jumper wire GPIO4 -> GPIO5; skipped cleanly if the wire is not there.
+//      Runs twice: once with the UART's internal loopback (TX tied to RX inside the chip,
+//      no wire needed), and once through the pins, which needs a jumper GPIO4 -> GPIO5
+//      and is skipped cleanly if the wire is not there.
 #include <Arduino.h>
 
+#include <cstring>
+
+#include "driver/uart.h"
 #include "hal/cpu_ll.h"
+#include "hal/uart_ll.h"
+#include "soc/uart_struct.h"
 #include "muzzle/frame_parser.hpp"
 #include "muzzle/sample_traffic.hpp"
 
@@ -100,12 +107,14 @@ int32_t wait_readable(uint32_t t0, uint32_t limit_us) {
     return static_cast<int32_t>((cycles() - t0) / g_cpu_mhz);
 }
 
-LoopResult bench_loopback(bool tuned) {
+LoopResult bench_loopback(bool tuned, bool internal) {
     LoopResult r;
     Serial1.end();
     // Arduino's default: RX FIFO interrupt after 112 bytes, else the driver's idle timeout.
     Serial1.begin(kBaud, SERIAL_8N1, kRxPin, kTxPin, false, 20000UL, tuned ? 1 : 112);
     if (tuned) Serial1.setRxTimeout(1);
+    // begin() reconfigures the port, so the loopback bit is set (or cleared) after it.
+    uart_set_loop_back(UART_NUM_1, internal);
     delay(20);
     while (Serial1.available()) Serial1.read();
 
@@ -142,6 +151,76 @@ LoopResult bench_loopback(bool tuned) {
     return r;
 }
 
+// Same loopback, but below the driver: the driver's RX interrupt is switched off and the
+// hardware FIFO is polled and read straight from the UART registers. This is the path a
+// real in-line device would use, so it shows what the silicon costs without the driver.
+struct DirectResult {
+    bool ok = false;
+    Stat byte_cycles;
+    Stat frame_cycles;
+};
+
+DirectResult bench_direct() {
+    DirectResult r;
+    Serial1.end();
+    Serial1.begin(kBaud, SERIAL_8N1, kRxPin, kTxPin, false, 20000UL, 1);
+    uart_set_loop_back(UART_NUM_1, true);
+    uart_disable_rx_intr(UART_NUM_1);
+    delay(5);
+    uart_ll_rxfifo_rst(&UART1);
+
+    const uint32_t limit = 200000u * g_cpu_mhz;
+    for (int i = 0; i < kLoopTrials; ++i) {
+        const uint8_t b = 0x55;
+        const uint32_t t0 = cycles();
+        uart_ll_write_txfifo(&UART1, &b, 1);
+        while (uart_ll_get_rxfifo_len(&UART1) == 0) {
+            if (cycles() - t0 > limit) return r;
+        }
+        r.byte_cycles.add(cycles() - t0);
+        uint8_t sink;
+        uart_ll_read_rxfifo(&UART1, &sink, 1);
+    }
+
+    uint8_t frame[32];
+    uint8_t goals[12];
+    for (int i = 0; i < 6; ++i)
+        muzzle::feetech::write_u16_le(goals + 2 * i, static_cast<uint16_t>(2000 + i));
+    const size_t n = muzzle::feetech::encode_sync_write(frame, sizeof frame, muzzle::feetech::reg::kGoalPosition,
+                                                        2, muzzle::sample::kArmIds, 6, goals);
+    FrameParser p;
+    for (int i = 0; i < kLoopTrials; ++i) {
+        p.abandon();
+        const uint32_t t0 = cycles();
+        uart_ll_write_txfifo(&UART1, frame, static_cast<uint32_t>(n));
+        bool done = false;
+        while (!done) {
+            if (cycles() - t0 > limit) return r;
+            uint32_t avail = uart_ll_get_rxfifo_len(&UART1);
+            while (avail-- && !done) {
+                uint8_t byte;
+                uart_ll_read_rxfifo(&UART1, &byte, 1);
+                done = p.feed(byte) == Event::kFrame;
+            }
+        }
+        r.frame_cycles.add(cycles() - t0);
+    }
+    r.ok = true;
+    return r;
+}
+
+void print_direct(const DirectResult& r) {
+    if (!r.ok) {
+        Serial.println("uart loopback, internal, direct FIFO: nothing came back");
+        return;
+    }
+    const double mhz = g_cpu_mhz;
+    Serial.printf("uart loopback, internal, direct FIFO (no driver): 1 byte min/mean/max = %.1f / %.1f / %.1f us "
+                  "(wire time 10 us); 26-byte frame min/mean/max = %.1f / %.1f / %.1f us (wire time 260 us)\n",
+                  r.byte_cycles.min / mhz, r.byte_cycles.mean() / mhz, r.byte_cycles.max / mhz,
+                  r.frame_cycles.min / mhz, r.frame_cycles.mean() / mhz, r.frame_cycles.max / mhz);
+}
+
 void print_parser(const char* label, const ParserResult& r) {
     const double per_byte_pass = static_cast<double>(r.pass_cycles) / static_cast<double>(g_traffic_len);
     Serial.printf("parser, %s: per byte min/mean/max = %u / %.1f / %u cycles (max %.2f us); "
@@ -153,6 +232,10 @@ void print_parser(const char* label, const ParserResult& r) {
 
 void print_loop(const char* label, const LoopResult& r) {
     if (!r.wired) {
+        if (std::strstr(label, "internal")) {
+            Serial.printf("uart loopback, %s: nothing came back, internal loopback failed\n", label);
+            return;
+        }
         Serial.printf("uart loopback, %s: no loopback wire (GPIO%d -> GPIO%d), skipped\n", label, kTxPin, kRxPin);
         return;
     }
@@ -190,8 +273,11 @@ void loop() {
 
     print_parser("interrupts off", bench_parser(true));
     print_parser("interrupts on", bench_parser(false));
-    print_loop("Arduino defaults", bench_loopback(false));
-    print_loop("tuned: fifo 1 byte, timeout 1 symbol", bench_loopback(true));
+    print_loop("internal, Arduino defaults", bench_loopback(false, true));
+    print_loop("internal, tuned: fifo 1 byte, timeout 1 symbol", bench_loopback(true, true));
+    print_direct(bench_direct());
+    print_loop("pins, Arduino defaults", bench_loopback(false, false));
+    print_loop("pins, tuned: fifo 1 byte, timeout 1 symbol", bench_loopback(true, false));
 
     delay(5000);
 }

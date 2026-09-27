@@ -63,7 +63,24 @@ microsecond timer: 1000 us = ~160,100 cycles), on 1,408 bytes of LeRobot-shaped 
 The parser is not the bottleneck. Interrupt jitter is: up to 6.4 us at random moments,
 which is why the byte path should run inside the UART interrupt rather than the main loop.
 
-Not measured yet: UART loopback latency (needs the GPIO4 -> GPIO5 jumper).
+UART1 at 1 Mbps with the UART's internal loopback (TX tied to RX inside the chip, no wire),
+200 trials each:
+
+| Read path | 1 byte (wire: 10 us) | 26-byte goal frame, parsed (wire: 260 us) |
+|---|---|---|
+| Arduino `Serial1`, default settings | 40.4 us mean | 843.4 us mean |
+| Arduino `Serial1`, FIFO threshold 1, timeout 1 symbol | 40.3 us mean | 843.4 us mean |
+| Hardware FIFO read directly, driver RX interrupt off | **10.1 us mean** | **260.4 us mean** |
+
+The chip is not slow; the driver path is. Each byte through `Serial1` costs about 30 us
+(interrupt, ring buffer, a mutex on every `available()` and `read()`), so byte-by-byte it
+sustains only about a third of 1 Mbps. Tuning did nothing because Arduino-ESP32 2.0.17
+already sets a 2-symbol RX timeout in `begin()`. Read straight from the FIFO, a full frame
+arrives and is parsed 0.4 us after its last bit. So muzzle's firmware reads the FIFO itself
+and never goes through `Serial`. Worst cases (15.4 us / 266.5 us) match the interrupt
+jitter seen in the parser numbers.
+
+Not measured yet: the same through real pins (needs a GPIO4 -> GPIO5 jumper).
 
 ## Running it
 
@@ -79,5 +96,5 @@ UART part, add one jumper wire from GPIO4 to GPIO5.
 
 ## Status
 
-Protocol layer: working and tested, on the laptop and on the chip. UART latency: pending. Everything
+Protocol layer: working and tested, on the laptop and on the chip. UART path: measured; the firmware reads the FIFO directly. Everything
 built on top of this lives in later work.
