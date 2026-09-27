@@ -51,8 +51,19 @@ Measured on the laptop (x86-64, GCC 11.4, clang 14):
 | Parser throughput, Release | 4.66 ns per byte (a byte takes 10,000 ns on the wire) |
 | ESP32-C3 build | compiles; `FrameParser::feed` is 348 bytes, placed in IRAM at `0x4038025c` |
 
-Not measured yet, needs the board: cycles per byte on the ESP32-C3 and UART loopback
-latency. `firmware/c3_bench` prints both.
+Measured on an ESP32-C3 (rev v0.4, 160 MHz, cycle counter checked against the
+microsecond timer: 1000 us = ~160,100 cycles), on 1,408 bytes of LeRobot-shaped traffic:
+
+| Check | Result |
+|---|---|
+| Parser per byte, interrupts off | min 26 / mean 31.8 / max 83 cycles (worst 0.52 us) |
+| Whole pass, no per-byte timing | 38.0 cycles per byte = 0.24 us, 2.4% of a byte's 10 us wire time |
+| Parser per byte, interrupts on | same mean; an interrupt landing mid-byte pushed one sample to ~1,020 cycles (6.4 us) |
+
+The parser is not the bottleneck. Interrupt jitter is: up to 6.4 us at random moments,
+which is why the byte path should run inside the UART interrupt rather than the main loop.
+
+Not measured yet: UART loopback latency (needs the GPIO4 -> GPIO5 jumper).
 
 ## Running it
 
@@ -68,5 +79,5 @@ UART part, add one jumper wire from GPIO4 to GPIO5.
 
 ## Status
 
-Protocol layer: working and tested. On-chip numbers: pending first flash. Everything
+Protocol layer: working and tested, on the laptop and on the chip. UART latency: pending. Everything
 built on top of this lives in later work.
